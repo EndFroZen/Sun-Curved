@@ -3,8 +3,9 @@ import Database from "@tauri-apps/plugin-sql";
 import { listen } from "@tauri-apps/api/event";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { compile, parseManifest, scripts, TEMPLATE, type Manifest } from "./deploy";
+import { compile, LOG_MARK, parseManifest, parsePm2, scripts, TEMPLATE, type Manifest } from "./deploy";
 import { createEditor } from "./editor";
+import { createEasy } from "./easy";
 import { createFlow } from "./flow";
 import { marked } from "marked";
 import manualMd from "./manual.md?raw";
@@ -135,6 +136,13 @@ const ICONS = {
   chevronLeft: '<path d="m15 18-6-6 6-6"/>',
   folder: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
   arrowUp: '<path d="m5 12 7-7 7 7M12 19V5"/>',
+  dots: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
+  corner: '<path d="m15 10 5 5-5 5"/><path d="M4 4v7a4 4 0 0 0 4 4h12"/>',
+  arrowDown: '<path d="M12 5v14M19 12l-7 7-7-7"/>',
+  trash: '<path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
+  file: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/>',
+  maximize: '<path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>',
+  minimize: '<path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/>',
   logs: '<path d="M3 5h.01M3 12h.01M3 19h.01M8 5h13M8 12h13M8 19h13"/>',
   terminal: '<path d="m4 17 6-6-6-6"/><path d="M12 19h8"/>',
   plus: '<path d="M5 12h14M12 5v14"/>',
@@ -330,8 +338,8 @@ const SETUP_SCRIPT = `d="$HOME/${REMOTE_DIR.slice(2)}"; f="$d/${REMOTE_DB}"
 if [ -d "$d" ]; then echo dir=exists; else mkdir -p "$d" && echo dir=created; fi
 if [ -f "$f" ]; then echo db=exists; else : > "$f" && echo db=created; fi`;
 
-type LogLevel = "info" | "step" | "ok" | "warn" | "err";
-const LOG_COLOR: Record<LogLevel, string> = { info: "text-zinc-400", step: "font-semibold text-zinc-100", ok: "text-emerald-400", warn: "text-amber-400", err: "text-red-400" };
+type LogLevel = "info" | "step" | "ok" | "warn" | "err" | "note";
+const LOG_COLOR: Record<LogLevel, string> = { info: "text-zinc-400", step: "font-semibold text-zinc-100", ok: "text-emerald-400", warn: "text-amber-400", err: "text-red-400", note: "font-medium text-sky-400" };
 
 // ---------- auth popup (password / 2FA asked by the server) ----------
 
@@ -508,6 +516,23 @@ async function app() {
         <article id="manual-body" class="manual min-h-0 flex-1 overflow-auto px-8 py-6"></article>
       </div>
     </dialog>
+    <dialog id="picker" class="fixed inset-0 m-auto h-[70vh] w-[36rem] max-w-[92vw] rounded-2xl border border-zinc-800 bg-zinc-900 p-0 text-zinc-100 backdrop:bg-black/70">
+      <div class="flex h-full flex-col">
+        <div class="flex items-center gap-3 border-b border-zinc-800 px-5 py-3">
+          <span class="text-amber-400">${icon("folder")}</span>
+          <h2 id="pick-title" class="font-semibold"></h2>
+        </div>
+        <form id="pick-bar" class="flex items-center gap-1 border-b border-zinc-800 px-4 py-2">
+          <button type="button" id="pick-up" title="Up one folder" class="rounded-lg p-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100">${icon("arrowUp")}</button>
+          <input id="pick-path" spellcheck="false" class="ml-1 flex-1 rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-1.5 font-mono text-sm outline-none focus:border-amber-500" />
+        </form>
+        <div id="pick-list" class="min-h-0 flex-1 overflow-auto p-2"></div>
+        <div class="flex justify-end gap-2 border-t border-zinc-800 px-5 py-3">
+          <button type="button" id="pick-cancel" class="rounded-lg px-4 py-2 text-sm text-zinc-400 hover:bg-zinc-800">Cancel</button>
+          <button type="button" id="pick-ok" class="rounded-lg bg-amber-500 px-4 py-2 text-sm font-medium text-black hover:bg-amber-400">เลือกโฟลเดอร์นี้</button>
+        </div>
+      </div>
+    </dialog>
     <div id="ctx" class="fixed z-50 hidden min-w-48 rounded-xl border border-zinc-700 bg-zinc-900/95 p-1 text-sm text-zinc-100 shadow-2xl shadow-black/50 backdrop-blur"></div>
     <dialog id="auth" class="fixed inset-0 m-auto h-fit w-96 rounded-2xl border border-zinc-800 bg-zinc-900 p-0 text-zinc-100 backdrop:bg-black/70">
       <form id="auth-form" class="space-y-3 p-6">
@@ -638,7 +663,7 @@ function renderList() {
       }).join("")
     : `<p class="px-3 py-6 text-center text-xs text-zinc-600">${conns.length ? "No match" : "No servers yet"}</p>`;
 
-  document.querySelectorAll<HTMLElement>("[data-open]").forEach((b) => {
+  $("#list").querySelectorAll<HTMLElement>("[data-open]").forEach((b) => {
     const c = conns.find((c) => c.id === +b.dataset.open!)!;
     // Already connected → jump to its first tab; a fresh session is a right-click away.
     b.onclick = () => {
@@ -649,10 +674,10 @@ function renderList() {
     };
     b.oncontextmenu = (e) => contextMenu(e, [["New session", "plus", () => openTab(c)]]);
   });
-  document.querySelectorAll<HTMLElement>("[data-edit]").forEach((b) =>
+  $("#list").querySelectorAll<HTMLElement>("[data-edit]").forEach((b) =>
     (b.onclick = () => openForm(conns.find((c) => c.id === +b.dataset.edit!))));
   // Two-click delete: first click arms, second confirms.
-  document.querySelectorAll<HTMLElement>("[data-del]").forEach((b) =>
+  $("#list").querySelectorAll<HTMLElement>("[data-del]").forEach((b) =>
     (b.onclick = async () => {
       if (!b.dataset.armed) {
         b.dataset.armed = "1";
@@ -723,21 +748,54 @@ function connect(tab: Tab, attempt = 1, lastErr = "") {
             <button data-refresh title="Refresh" class="rounded p-1 hover:bg-zinc-800 hover:text-zinc-200">${icon("refresh", "h-3.5 w-3.5")}</button>
           </div>
           <nav data-list class="flex-1 space-y-0.5 overflow-auto px-2 pb-3"></nav>
+          <div data-qbar class="hidden space-y-2 border-t border-zinc-800 p-3">
+            <div class="flex items-center gap-2 text-xs">
+              <span data-qcount class="flex-1 font-medium text-zinc-200"></span>
+              <button data-qall class="rounded px-1.5 py-0.5 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-100">ทั้งหมด</button>
+              <button data-qclear class="rounded px-1.5 py-0.5 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-100">ล้าง</button>
+            </div>
+            <label class="flex items-center gap-2 text-[11px] text-zinc-500">ถ้าตัวไหนพัง
+              <select data-qfail class="flex-1 rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1 text-xs text-zinc-200 outline-none focus:border-amber-500">
+                <option value="stop">หยุดคิว</option>
+                <option value="skip">ข้ามไปตัวถัดไป</option>
+              </select>
+            </label>
+            <button data-qapply class="flex w-full items-center justify-center gap-2 rounded-lg bg-amber-500 px-3 py-2 text-sm font-medium text-black hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-40">${icon("rocket")} <span data-qlabel>Apply</span></button>
+            <p class="text-center text-[11px] text-zinc-500">ถาม tag ครบทุกตัวก่อน แล้วรันทีละตัวตามลำดับเลข</p>
+          </div>
         </aside>
         <main class="flex min-w-0 flex-1 flex-col">
           <div class="flex items-center gap-2 border-b border-zinc-800 px-5 py-2">
-            <h2 data-title class="flex-1 truncate font-mono text-sm"></h2>
-            <button data-del class="rounded-lg px-3 py-1.5 text-sm text-red-400 hover:bg-red-500/10">Delete</button>
-            <button data-manual title="Manual" class="rounded-lg px-2 py-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100">${icon("book")}</button>
-            <button data-flow class="rounded-lg px-3 py-1.5 text-sm text-zinc-400 hover:bg-zinc-800">Flow</button>
-            <button data-sh class="rounded-lg px-3 py-1.5 text-sm text-zinc-400 hover:bg-zinc-800">View sh</button>
-            <button data-apply class="flex items-center gap-2 rounded-lg bg-amber-500 px-4 py-1.5 text-sm font-medium text-black hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-40">${icon("rocket")} Apply</button>
+            <h2 data-title class="min-w-0 flex-1 truncate font-mono text-sm"></h2>
+            <div class="dp-seg" role="tablist" aria-label="มุมมอง">
+              <button data-v="easy" title="ฟอร์ม กด + เพิ่มทีละอย่าง">ฟอร์ม</button>
+              <button data-v="yaml" title="แก้ YAML ตรงๆ">YAML</button>
+              <span class="dp-seg-sep"></span>
+              <button data-v="flow" title="ดูขั้นตอนเป็นแผนผัง + จำลอง">Flow</button>
+              <button data-v="sh" title="สคริปต์ bash ที่จะรันบนเครื่องจริง">sh</button>
+            </div>
+            <button data-manual title="คู่มือ" class="dp-icon">${icon("book")}</button>
+            <details data-more class="relative">
+              <summary title="เพิ่มเติม" class="dp-icon list-none">${icon("dots")}</summary>
+              <div class="absolute right-0 z-50 mt-1 w-60 rounded-xl border border-zinc-700 bg-zinc-900/95 p-1 text-sm text-zinc-100 shadow-2xl shadow-black/50 backdrop-blur">
+                <button data-savesh class="dp-mi">${icon("file")}<span><span class="block">Save sh ลงเครื่อง</span><span class="block text-[11px] text-zinc-500">ไว้รันเองใน Terminal ไม่มีรหัส sudo ข้างใน</span></span></button>
+                <div data-delwrap class="mt-1 border-t border-zinc-800 pt-1">
+                  <button data-del class="dp-mi text-red-400 hover:bg-red-500/10!">${icon("trash")}<span data-deltext>ลบ deployment นี้</span></button>
+                </div>
+              </div>
+            </details>
+            <button data-apply class="ml-1 flex items-center gap-2 rounded-lg bg-amber-500 px-4 py-1.5 text-sm font-medium text-black hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-40">${icon("rocket")} Apply</button>
           </div>
           <p data-err class="min-h-5 px-5 pt-1 text-xs text-red-400"></p>
+          <div data-easy class="hidden min-h-0 flex-1 overflow-auto"></div>
           <div data-yaml class="min-h-0 flex-1 overflow-hidden"></div>
           <div data-flowbox class="hidden min-h-0 flex-1 overflow-auto"></div>
-          <div class="flex h-60 shrink-0 flex-col border-t border-zinc-800">
-            <p class="px-5 pt-2 text-[11px] font-medium uppercase tracking-wider text-zinc-500">Deploy log</p>
+          <div data-dpanel class="flex h-60 shrink-0 flex-col border-t border-zinc-800 bg-zinc-950">
+            <div class="flex items-center px-5 pt-1.5">
+              <p class="flex-1 text-[11px] font-medium uppercase tracking-wider text-zinc-500">Deploy log</p>
+              <button data-dclear title="Clear log" class="flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] text-zinc-500 hover:bg-zinc-800 hover:text-zinc-100">${icon("trash", "h-3 w-3")} Clear</button>
+              <button data-dfull title="Full screen (Esc เพื่อออก)" class="ml-1 flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] text-zinc-500 hover:bg-zinc-800 hover:text-zinc-100"></button>
+            </div>
             <div data-dlog class="min-h-0 flex-1 overflow-auto px-5 py-1 font-mono text-xs leading-6"></div>
           </div>
         </main>
@@ -1157,45 +1215,83 @@ function deployPage(ctx: DeployCtx, root: HTMLElement) {
   let current: string | null = null; // selected deployment, null = new
   let shYaml: string | null = null; // YAML kept aside while showing the generated sh
   let opened = false;
+  // "easy" = form over the YAML (easy.ts), "yaml" = the code editor. Both edit the same text in `ed`.
+  let mode: "easy" | "yaml" = localStorage.deployMode === "yaml" ? "yaml" : "easy";
   const ed = createEditor(q("[data-yaml]"), () => shYaml === null && validate());
+  const easy = createEasy(q("[data-easy]"), {
+    change: (yaml) => ed.set(yaml),
+    pick: (kind, start) => pickRemote(ctx.sid, kind, start),
+    envNames: async (file) => (await remote(ctx, scripts.envNames(file))).out.split("\n").filter(Boolean),
+    // same shell + env file as a deploy, so pm2 from nvm / a PATH set in the env file is found
+    pm2Apps: async (envFrom) => parsePm2((await remote(ctx, SHELL, scripts.pm2Apps(envFrom))).out),
+    icon,
+  });
   const flow = createFlow(q("[data-flowbox]"), (text, step) => ctx.log(step ? "step" : "info", `[sim] ${text}`));
   const flowOn = () => !q("[data-flowbox]").classList.contains("hidden");
+  /** Shows the form, the code editor or the flow, from the current mode / sh / flow state. */
+  const layout = () => {
+    const sh = shYaml !== null;
+    const fl = flowOn();
+    q("[data-easy]").classList.toggle("hidden", sh || fl || mode !== "easy");
+    q("[data-yaml]").classList.toggle("hidden", fl || (!sh && mode === "easy"));
+    const view = sh ? "sh" : fl ? "flow" : mode;
+    root.querySelectorAll<HTMLElement>("[data-v]").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.v === view)));
+  };
   const showFlow = (on: boolean) => {
     q("[data-flowbox]").classList.toggle("hidden", !on);
-    q("[data-yaml]").classList.toggle("hidden", on);
-    q("[data-flow]").textContent = on ? "Back to YAML" : "Flow";
+    layout();
     if (!on) return;
     const m = parseManifest(ed.get());
-    flow.render(compile(m, { tag: "<tag>", discard: m.targets.map((t) => t.name), sudoPassword: "********" }), `${m.gitUrl} @ ${m.version}`);
+    flow.render(compile(m, { tag: "<tag>", discard: m.targets.map((t) => t.name), sudoPassword: "********" }), `${m.gitUrl} @ ${m.branch ? `branch ${m.branch}` : m.version}`);
   };
 
   const validate = () => {
+    let msg = "";
     try {
       parseManifest(ed.get());
-      q("[data-err]").textContent = "";
-      return true;
     } catch (e) {
-      q("[data-err]").textContent = (e as Error).message;
-      return false;
+      msg = (e as Error).message;
     }
+    q("[data-err]").textContent = msg;
+    easy.mark(msg);
+    return !msg;
   };
   const showYaml = (text = shYaml ?? ed.get()) => {
     shYaml = null;
     showFlow(false);
     ed.set(text, "manifest");
-    q("[data-sh]").textContent = "View sh";
+  };
+  /** Switches mode; the form only opens on YAML it can read. */
+  const setMode = (m: "easy" | "yaml", remember = true) => {
+    if (shYaml !== null) showYaml();
+    if (flowOn()) showFlow(false);
+    if (m === "easy") {
+      const err = easy.load(ed.get());
+      if (err) {
+        q("[data-err]").textContent = `แก้ YAML ให้ถูกก่อนถึงจะเปิดโหมดง่ายได้ - ${err}`;
+        m = "yaml";
+        remember = false;
+      }
+    }
+    mode = m;
+    if (remember) localStorage.deployMode = m;
+    layout();
+    if (m === "yaml") ed.focus();
   };
   const resetDel = () => {
-    const b = q("[data-del]");
-    b.textContent = "Delete";
-    delete b.dataset.armed;
+    q("[data-deltext]").textContent = "ลบ deployment นี้";
+    delete q("[data-del]").dataset.armed;
   };
+  const closeMore = () => (q<HTMLDetailsElement>("[data-more]").removeAttribute("open"), resetDel());
+  // the ⋯ menu closes on a click elsewhere or Esc, and an armed delete un-arms
+  addEventListener("mousedown", (e) => q("[data-more]").hasAttribute("open") && !q("[data-more]").contains(e.target as Node) && closeMore());
+  addEventListener("keydown", (e) => e.key === "Escape" && q("[data-more]").hasAttribute("open") && closeMore());
   const setCurrent = (name: string | null) => {
     current = name;
     q("[data-title]").textContent = name ? `deployments/${name}.yaml` : "New deployment";
-    q("[data-del]").classList.toggle("hidden", !name);
+    q("[data-delwrap]").classList.toggle("hidden", !name);
     resetDel();
-    root.querySelectorAll<HTMLElement>("[data-dep]").forEach((b) => b.classList.toggle("bg-zinc-800", b.dataset.dep === name));
+    root.querySelectorAll<HTMLElement>("[data-row]").forEach((b) => b.classList.toggle("is-current", b.dataset.row === name));
   };
 
   async function select(name: string | null) {
@@ -1208,8 +1304,9 @@ function deployPage(ctx: DeployCtx, root: HTMLElement) {
         ctx.log("err", `[${name}] cannot read manifest: ${err}`);
       }
     }
-    validate();
-    ed.focus();
+    q("[data-err]").textContent = "";
+    setMode(localStorage.deployMode === "yaml" ? "yaml" : "easy", false); // the form falls back to YAML if it can't read the file
+    if (!q("[data-err]").textContent) validate();
   }
 
   async function refresh() {
@@ -1218,63 +1315,209 @@ function deployPage(ctx: DeployCtx, root: HTMLElement) {
     try {
       // each line: "<name> <tag> ok|failed <date> <time>" or "<name> never"
       const rows = (await remote(ctx, scripts.list)).out.trim().split("\n").filter(Boolean).map((l) => l.split(" "));
+      names = rows.map((r) => r[0]);
+      picked = picked.filter((n) => names.includes(n));
       list.innerHTML = rows.length
         ? rows
             .map(([name, ...st]) => `
-              <button data-dep="${esc(name)}" class="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left hover:bg-zinc-800">
-                ${dot(st[1] === "ok" ? "live" : st[1] === "failed" ? "closed" : undefined)}
-                <span class="min-w-0 flex-1">
-                  <span class="block truncate font-mono text-sm">${esc(name)}</span>
-                  <span class="block truncate text-[11px] text-zinc-500">${esc(st[0] === "never" ? "never deployed" : st.join(" "))}</span>
-                </span>
-              </button>`)
+              <div data-row="${esc(name)}" class="dp-row">
+                <button data-pick="${esc(name)}" class="dp-pick" title="เลือกเข้าคิว Apply หลายตัว (ลำดับตามที่กด)"></button>
+                <button data-dep="${esc(name)}" class="flex min-w-0 flex-1 items-center gap-2.5 py-2 pr-3 text-left">
+                  ${dot(st[1] === "ok" ? "live" : st[1] === "failed" ? "closed" : undefined)}
+                  <span class="min-w-0 flex-1">
+                    <span class="block truncate font-mono text-sm">${esc(name)}</span>
+                    <span data-sub class="block truncate text-[11px] text-zinc-500">${esc(st[0] === "never" ? "never deployed" : st.join(" "))}</span>
+                  </span>
+                </button>
+              </div>`)
             .join("")
         : `<p class="px-3 py-2 text-xs text-zinc-500">None yet</p>`;
       list.querySelectorAll<HTMLElement>("[data-dep]").forEach((b) => (b.onclick = () => select(b.dataset.dep!)));
+      list.querySelectorAll<HTMLElement>("[data-pick]").forEach((b) => (b.onclick = () => togglePick(b.dataset.pick!)));
       setCurrent(current);
+      paintQueue();
     } catch (err) {
       list.innerHTML = `<p class="px-3 py-2 text-xs text-red-400">${esc(err)}</p>`;
     }
   }
 
+  root.querySelectorAll<HTMLElement>("[data-v]").forEach((b) => {
+    const v = b.dataset.v!;
+    b.setAttribute("role", "tab");
+    b.onclick = () => (v === "flow" ? openFlow() : v === "sh" ? openSh() : setMode(v as "easy" | "yaml"));
+  });
   q("[data-new]").onclick = () => select(null);
   q("[data-refresh]").onclick = refresh;
+  q("[data-dclear]").onclick = () => (q("[data-dlog]").innerHTML = "");
+  // Full screen log: the panel covers the whole window; Esc or the button puts it back.
+  const dpanel = q("[data-dpanel]"), dfull = q("[data-dfull]");
+  const setFull = (on: boolean) => {
+    const log = q("[data-dlog]"), atEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 8;
+    dpanel.classList.toggle("fixed", on);
+    dpanel.classList.toggle("inset-0", on);
+    dpanel.classList.toggle("z-50", on);
+    dpanel.classList.toggle("h-60", !on);
+    dpanel.classList.toggle("border-t", !on);
+    dfull.innerHTML = on ? `${icon("minimize", "h-3 w-3")} ย่อ` : `${icon("maximize", "h-3 w-3")} Full`;
+    if (atEnd) log.scrollTop = log.scrollHeight; // stay following the newest lines
+  };
+  setFull(false);
+  dfull.onclick = () => setFull(!dpanel.classList.contains("fixed"));
+  addEventListener("keydown", (e) => e.key === "Escape" && dpanel.isConnected && dpanel.classList.contains("fixed") && setFull(false));
+  // A script file to run by hand in Terminal (gets the interactive shell's PATH, e.g. from ~/.bashrc).
+  q("[data-savesh]").onclick = async () => {
+    closeMore();
+    if (shYaml !== null) showYaml();
+    if (!validate()) return;
+    const m = parseManifest(ed.get());
+    const r = await remote(ctx, scripts.saveSh(m.name, compile(m, { tag: "", discard: [], standalone: true }))).catch((e) => ({ out: String(e), code: 1 }));
+    if (r.code) return ctx.log("err", `[${m.name}] cannot save sh: ${r.out.trim()}`);
+    const path = `~/EndFroZen/SunCurved/scripts/${m.name}.sh`;
+    ctx.log("ok", `[${m.name}] saved ${path} (chmod 700, no password inside)`);
+    ctx.log("info", `run it in Terminal:  ${path}${!m.branch && m.version === "tag" ? " <tag>   e.g. v1.2.0" : ""}`);
+  };
   // Preview what will actually run on the machine.
   q("[data-manual]").onclick = openManual;
-  q("[data-flow]").onclick = () => {
-    if (flowOn()) return showFlow(false);
+  const openFlow = () => {
+    if (flowOn()) return;
     if (shYaml !== null) showYaml();
     if (validate()) showFlow(true);
   };
-  q("[data-sh]").onclick = () => {
-    if (shYaml !== null) return showYaml();
+  const openSh = () => {
+    if (shYaml !== null) return;
     if (!validate()) return;
     showFlow(false);
     shYaml = ed.get();
     ed.set(compile(parseManifest(shYaml), { tag: "<chosen at deploy>", discard: [], sudoPassword: "********" }), "sh", true);
-    q("[data-sh]").textContent = "Back to YAML";
+    layout();
   };
+  // ----- Apply: the open one, or the picked ones as a queue. One at a time per machine. -----
+  let busy = false;
+  let names: string[] = []; // deployments in the list
+  let picked: string[] = []; // queue order = the order they were picked
+  const qstate = new Map<string, "wait" | "run" | "ok" | "fail" | "skip">();
+  const QTEXT = { wait: "รอคิว", run: "กำลัง deploy…", ok: "สำเร็จ (คิวนี้)", fail: "ล้มเหลว (คิวนี้)", skip: "ไม่ได้รัน" };
+  const setBusy = (on: boolean) => {
+    busy = on;
+    q<HTMLButtonElement>("[data-apply]").disabled = on;
+    paintQueue();
+  };
+  function togglePick(name: string) {
+    if (busy) return;
+    picked = picked.includes(name) ? picked.filter((n) => n !== name) : [...picked, name];
+    qstate.clear();
+    paintQueue();
+  }
+  function paintQueue() {
+    root.querySelectorAll<HTMLElement>("[data-row]").forEach((row) => {
+      const name = row.dataset.row!;
+      const k = picked.indexOf(name);
+      const b = row.querySelector<HTMLElement>("[data-pick]")!;
+      b.textContent = k >= 0 ? String(k + 1) : "";
+      b.setAttribute("aria-pressed", String(k >= 0));
+      b.toggleAttribute("disabled", busy);
+      row.classList.toggle("is-picked", k >= 0);
+      const st = qstate.get(name);
+      row.dataset.q = st ?? "";
+      const sub = row.querySelector<HTMLElement>("[data-sub]")!;
+      sub.dataset.orig ??= sub.textContent!;
+      sub.textContent = st ? QTEXT[st] : sub.dataset.orig;
+    });
+    q("[data-list]").classList.toggle("has-picks", picked.length > 0);
+    q("[data-qbar]").classList.toggle("hidden", !picked.length);
+    q("[data-qcount]").textContent = `เลือก ${picked.length} ตัว`;
+    q("[data-qlabel]").textContent = busy ? "กำลังรันคิว…" : `Apply ${picked.length} ตัวตามลำดับ`;
+    q<HTMLButtonElement>("[data-qapply]").disabled = busy || !picked.length;
+    q<HTMLSelectElement>("[data-qfail]").disabled = busy;
+  }
+  const qfail = q<HTMLSelectElement>("[data-qfail]");
+  qfail.value = localStorage.deployQueueFail === "skip" ? "skip" : "stop";
+  qfail.onchange = () => (localStorage.deployQueueFail = qfail.value);
+  q("[data-qclear]").onclick = () => {
+    if (busy) return;
+    picked = [];
+    qstate.clear();
+    paintQueue();
+  };
+  q("[data-qall]").onclick = () => {
+    if (busy) return;
+    picked = [...picked, ...names.filter((n) => !picked.includes(n))];
+    qstate.clear();
+    paintQueue();
+  };
+
   q("[data-apply]").onclick = async () => {
+    if (busy) return;
     if (shYaml !== null) showYaml();
     if (!validate()) return;
     showFlow(true); // watch the steps light up while it runs
-    const btn = q<HTMLButtonElement>("[data-apply]");
-    btn.disabled = true;
+    setBusy(true);
     try {
-      await startDeploy(ctx, ed.get(), flow);
+      const p = await prepareDeploy(ctx, ed.get(), true);
+      if (p) await runDeploy(ctx, p, flow);
     } finally {
-      btn.disabled = false;
+      setBusy(false);
     }
     setCurrent(parseManifest(ed.get()).name);
     refresh();
   };
+
+  /** Asks about every picked deployment first (tag, local changes), then runs them one after another. */
+  q("[data-qapply]").onclick = async () => {
+    if (busy || !picked.length) return;
+    const queue = [...picked];
+    const stopOnFail = qfail.value === "stop";
+    qstate.clear();
+    queue.forEach((n) => qstate.set(n, "wait"));
+    setBusy(true);
+    ctx.log("info", `queue: ${queue.join(" → ")}  (ถ้าพัง: ${stopOnFail ? "หยุดคิว" : "ข้ามไปตัวถัดไป"})`);
+    const ready: Prepared[] = [];
+    let ok = 0, failed = 0;
+    try {
+      for (const [k, name] of queue.entries()) {
+        // the open one: what's in the editor (saved first, like Apply); the others: as saved on the machine
+        const open = name === current && shYaml === null;
+        const text = open ? ed.get() : (await remote(ctx, scripts.read(name))).out;
+        const p = await prepareDeploy(ctx, text, open, `${k + 1}/${queue.length}`);
+        if (p) ready.push(p);
+        else qstate.set(name, "skip");
+        paintQueue();
+      }
+      for (const [k, p] of ready.entries()) {
+        const name = p.m.name;
+        qstate.set(name, "run");
+        paintQueue();
+        const here = name === current;
+        if (here) showFlow(true);
+        const good = await runDeploy(ctx, p, here ? flow : undefined);
+        qstate.set(name, good ? "ok" : "fail");
+        if (good) ok++;
+        else failed++;
+        paintQueue();
+        if (!good && stopOnFail) {
+          ready.slice(k + 1).forEach((r) => qstate.set(r.m.name, "skip"));
+          break;
+        }
+      }
+    } catch (e) {
+      ctx.log("err", `queue: ${e}`);
+    } finally {
+      const notRun = queue.length - ok - failed;
+      ctx.log(failed ? "err" : "ok", `queue done: ${ok} สำเร็จ, ${failed} ล้มเหลว${notRun ? `, ${notRun} ไม่ได้รัน` : ""}`);
+      queue.forEach((n) => qstate.get(n) === "wait" && qstate.set(n, "skip"));
+      setBusy(false);
+      await refresh(); // fresh states from the machine; the queue result stays on the rows until the picks change
+    }
+  };
+
   q("[data-del]").onclick = async () => {
     const b = q("[data-del]");
     if (!b.dataset.armed) {
       b.dataset.armed = "1";
-      b.textContent = "Delete manifest?";
+      q("[data-deltext]").textContent = "กดอีกครั้งเพื่อยืนยันลบ";
       return;
     }
+    closeMore();
     if (!current) return;
     const r = await remote(ctx, scripts.remove(current)).catch((e) => ({ out: String(e), code: 1 }));
     ctx.log(r.code ? "err" : "ok", `[${current}] ${r.out.trim()}`);
@@ -1296,11 +1539,11 @@ function deployPage(ctx: DeployCtx, root: HTMLElement) {
 type RunChoice = { tag: string; discard: string[] };
 let runResolve: ((c: RunChoice | null) => void) | null = null;
 
-function askRun(m: Manifest, tags: string[], dirty: Map<string, string[]>): Promise<RunChoice | null> {
-  $("#run-title").textContent = `Deploy ${m.name}`;
-  const pickTag = m.version === "tag";
+function askRun(m: Manifest, tags: string[], dirty: Map<string, string[]>, label = ""): Promise<RunChoice | null> {
+  $("#run-title").textContent = `${label ? `[${label}] ` : ""}Deploy ${m.name}${m.branch ? ` (git pull ${m.branch})` : ""}`;
+  const pickTag = !m.branch && m.version === "tag";
   $("#run-tag-wrap").classList.toggle("hidden", !pickTag);
-  $<HTMLSelectElement>("#run-tag").innerHTML = (pickTag ? tags : [m.version])
+  $<HTMLSelectElement>("#run-tag").innerHTML = (pickTag ? tags : [m.branch ?? m.version])
     .map((t, i) => `<option value="${esc(t)}">${esc(t)}${i === 0 && pickTag ? "  (latest)" : ""}</option>`)
     .join("");
   $("#run-dirty").innerHTML = m.targets
@@ -1340,15 +1583,28 @@ function wireRunDialog() {
   };
 }
 
-/** Our "kubectl apply": save manifest -> precheck -> ask -> compile to bash -> run (streamed). */
-async function startDeploy(ctx: DeployCtx, text: string, flow?: { step(): void; end(ok: boolean): void }) {
-  const m = parseManifest(text);
+type FlowSink = { step(title?: string): void; end(ok: boolean): void };
+/** A deployment ready to run: what was answered in the "are you sure" dialog. */
+type Prepared = { m: Manifest; choice: RunChoice };
+
+/** Apply, part 1: save manifest (`save`) -> precheck -> ask. null = cancelled or a problem (already logged).
+ *  `label` (e.g. "2/3") shows in the dialog when several deployments are applied in a row. */
+async function prepareDeploy(ctx: DeployCtx, text: string, save: boolean, label = ""): Promise<Prepared | null> {
+  let m: Manifest;
+  try {
+    m = parseManifest(text);
+  } catch (e) {
+    ctx.log("err", `${(e as Error).message}`);
+    return null;
+  }
   const tag = `[${m.name}]`;
   try {
-    const saved = await remote(ctx, scripts.save(m, text));
-    if (saved.code) return ctx.log("err", `${tag} cannot save manifest: ${saved.out.trim()}`);
-    ctx.log("info", `${tag} manifest saved, checking ${m.version === "tag" ? "tags and " : ""}working trees…`);
-
+    if (save) {
+      const saved = await remote(ctx, scripts.save(m, text));
+      if (saved.code) return (ctx.log("err", `${tag} cannot save manifest: ${saved.out.trim()}`), null);
+      ctx.log("info", `${tag} manifest saved`);
+    }
+    ctx.log("info", `${tag} checking ${m.version === "tag" && !m.branch ? "tags and " : ""}working trees…`);
     const pre = await remote(ctx, SHELL, scripts.precheck(m));
     const tags: string[] = [];
     const dirty = new Map<string, string[]>();
@@ -1359,15 +1615,25 @@ async function startDeploy(ctx: DeployCtx, text: string, flow?: { step(): void; 
       else if (line.startsWith("  ") && cur) cur.push(line.slice(2));
     }
     tags.reverse(); // newest first
-    if (m.version === "tag" && !tags.length) return ctx.log("err", `${tag} no tags found\n${pre.out.trim()}`);
+    if (m.version === "tag" && !m.branch && !tags.length) return (ctx.log("err", `${tag} no tags found\n${pre.out.trim()}`), null);
 
-    const choice = await askRun(m, tags, dirty);
-    if (!choice) return ctx.log("warn", `${tag} cancelled`);
+    const choice = await askRun(m, tags, dirty, label);
+    if (!choice) return (ctx.log("warn", `${tag} cancelled`), null);
+    return { m, choice };
+  } catch (e) {
+    ctx.log("err", `${tag} ${e}`);
+    return null;
+  }
+}
 
+/** Apply, part 2: compile to bash -> run (streamed). true = deployed. */
+async function runDeploy(ctx: DeployCtx, { m, choice }: Prepared, flow?: FlowSink): Promise<boolean> {
+  const tag = `[${m.name}]`;
+  try {
     let sudoPassword: string | undefined;
     if (m.sudo === "login-password") {
       sudoPassword = await invoke<string>("get_secret", { id: ctx.connId });
-      if (!sudoPassword) return ctx.log("err", `${tag} sudo needs the saved login password; set it with the edit button`);
+      if (!sudoPassword) return (ctx.log("err", `${tag} sudo needs the saved login password; set it with the edit button`), false);
     }
     const script = compile(m, { ...choice, sudoPassword });
 
@@ -1375,8 +1641,8 @@ async function startDeploy(ctx: DeployCtx, text: string, flow?: { step(): void; 
     const decoder = new TextDecoder();
     let partial = "";
     const emit = (line: string) => {
-      if (line.startsWith("==> ")) flow?.step();
-      ctx.log(line.startsWith("==> ") ? "step" : line.startsWith("!! ") ? "err" : "info", line);
+      if (line.startsWith("==> ")) flow?.step(line.slice(4));
+      ctx.log(line.startsWith("==> ") ? "step" : line.startsWith("!! ") ? "err" : line.startsWith(LOG_MARK) ? "note" : "info", line);
     };
     const un = await listen<number[]>(`exec-data-${ctx.sid}`, (e) => {
       const lines = (partial + decoder.decode(new Uint8Array(e.payload), { stream: true })).split(/\r?\n/);
@@ -1388,12 +1654,78 @@ async function startDeploy(ctx: DeployCtx, text: string, flow?: { step(): void; 
       if (partial.trim()) emit(partial);
       flow?.end(!r.code);
       ctx.log(r.code ? "err" : "ok", r.code ? `${tag} deploy failed (exit ${r.code})` : `${tag} deployed ${choice.tag}`);
+      return !r.code;
     } finally {
       un();
     }
   } catch (e) {
+    flow?.end(false);
     ctx.log("err", `${tag} ${e}`);
+    return false;
   }
+}
+
+// ----- folder / file picker on the machine (used by the easy deploy form) -----
+
+const homes = new Map<number, string>(); // sid -> $HOME, to give paths back as ~/...
+
+function pickRemote(sid: number, kind: "dir" | "file", start: string): Promise<string | null> {
+  const dlg = $<HTMLDialogElement>("#picker");
+  const list = $("#pick-list");
+  const input = $<HTMLInputElement>("#pick-path");
+  const run = (path: string) => invoke<ExecOut>("remote_exec", { sid, command: listScript(path) }).catch((e) => ({ out: String(e), code: 1 }));
+  const tilde = (abs: string) => {
+    const h = homes.get(sid);
+    return h && (abs === h || abs.startsWith(h + "/")) ? "~" + abs.slice(h.length) : abs;
+  };
+  let cur = "/";
+  let gen = 0;
+
+  return new Promise((resolve) => {
+    const done = (v: string | null) => {
+      gen++;
+      dlg.close();
+      resolve(v);
+    };
+    async function go(path: string, fallback = true) {
+      const me = ++gen;
+      list.innerHTML = `<p class="px-3 py-2 text-xs text-zinc-500">Loading…</p>`;
+      const r = await run(path);
+      if (me !== gen) return;
+      if (!r.out.startsWith("/")) {
+        if (fallback) return go("~", false); // start path missing: begin at home
+        list.innerHTML = `<p class="px-3 py-2 font-mono text-xs text-red-400">${esc(r.out.trim() || `exit ${r.code}`)}</p>`;
+        return;
+      }
+      const { path: abs, entries } = parseListing(r.out);
+      cur = abs;
+      input.value = tilde(abs);
+      list.innerHTML = entries.length
+        ? entries
+            .map((e, i) => {
+              const off = kind === "dir" && !e.dir;
+              return `<button data-pi="${i}" ${off ? "disabled" : ""} class="flex w-full items-center gap-3 rounded-lg px-3 py-1.5 text-left text-sm enabled:hover:bg-zinc-800 disabled:opacity-35 ${e.name.startsWith(".") ? "opacity-60" : ""}">
+                ${appArt(e.dir ? "folder" : "file", "h-6 w-6", fileColor(e.name))}<span class="truncate">${esc(e.name)}</span></button>`;
+            })
+            .join("")
+        : `<p class="px-3 py-6 text-center text-xs text-zinc-600">Empty folder</p>`;
+      list.querySelectorAll<HTMLElement>("[data-pi]").forEach((b) => {
+        const e = entries[+b.dataset.pi!];
+        b.onclick = () => (e.dir ? go(joinPath(cur, e.name)) : done(tilde(joinPath(cur, e.name))));
+      });
+    }
+
+    $("#pick-title").textContent = kind === "dir" ? "เลือกโฟลเดอร์" : "เลือกไฟล์";
+    $("#pick-ok").classList.toggle("hidden", kind !== "dir");
+    $("#pick-ok").onclick = () => done(tilde(cur));
+    $("#pick-cancel").onclick = () => done(null);
+    $("#pick-up").onclick = () => go(parentOf(cur));
+    $<HTMLFormElement>("#pick-bar").onsubmit = (e) => (e.preventDefault(), go(input.value.trim() || "~"));
+    dlg.oncancel = (e) => (e.preventDefault(), done(null));
+    dlg.showModal();
+    const home = homes.has(sid) ? Promise.resolve() : run("~").then((r) => void (r.out.startsWith("/") && homes.set(sid, r.out.split("\n")[0])));
+    home.then(() => go(start || "~"));
+  });
 }
 
 /** Our own yes/no dialog (no native confirm). Resolves true on the OK button. */
