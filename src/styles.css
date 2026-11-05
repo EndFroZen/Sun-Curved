@@ -88,3 +88,16 @@
 .icons-sm .tiles svg { width: 3rem; height: 3rem; }
 .icons-lg .tiles > button { width: 10rem; }
 .icons-lg .tiles svg { width: 7rem; height: 7rem; }
+
+/* Deploy flow (SVG): the wire into the running step streams dashes downward = data flowing. */
+.flow-node rect { fill: var(--color-zinc-900, #18181b); stroke: var(--color-zinc-700, #3f3f46); stroke-width: 1.5; transition: stroke .2s, fill .2s; }
+.flow-node .flow-top { font: 500 10px ui-sans-serif, system-ui; text-transform: uppercase; letter-spacing: .08em; fill: var(--color-zinc-500, #71717a); }
+.flow-node .flow-label { font: 13px 'Cascadia Mono', Consolas, monospace; fill: var(--color-zinc-200, #e4e4e7); }
+.flow-wire { stroke: var(--color-zinc-700, #3f3f46); stroke-width: 2; }
+.flow-node[data-state="ok"] rect { stroke: #10b981; }
+.flow-node[data-state="ok"] .flow-wire { stroke: #10b981; }
+.flow-node[data-state="fail"] rect { stroke: #ef4444; fill: rgb(239 68 68 / .12); }
+.flow-node[data-state="run"] rect { stroke: #f59e0b; fill: rgb(245 158 11 / .12); animation: flow-pulse 1s ease-in-out infinite; }
+.flow-node[data-state="run"] .flow-wire { stroke: #f59e0b; stroke-dasharray: 4 6; animation: flow-down .4s linear infinite; }
+@keyframes flow-down { to { stroke-dashoffset: -10; } }
+@keyframes flow-pulse { 50% { stroke-width: 3; } }

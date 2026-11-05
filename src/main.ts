@@ -5,6 +5,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { compile, parseManifest, scripts, TEMPLATE, type Manifest } from "./deploy";
 import { createEditor } from "./editor";
+import { createFlow } from "./flow";
 import { marked } from "marked";
 import manualMd from "./manual.md?raw";
 import { fmtSize, joinPath, listScript, parentOf, parseListing, PREVIEW_BYTES, readScript, writeScript, sudoWriteScript, modeFor, type Entry } from "./files";
@@ -728,11 +729,13 @@ function connect(tab: Tab, attempt = 1, lastErr = "") {
             <h2 data-title class="flex-1 truncate font-mono text-sm"></h2>
             <button data-del class="rounded-lg px-3 py-1.5 text-sm text-red-400 hover:bg-red-500/10">Delete</button>
             <button data-manual title="Manual" class="rounded-lg px-2 py-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100">${icon("book")}</button>
+            <button data-flow class="rounded-lg px-3 py-1.5 text-sm text-zinc-400 hover:bg-zinc-800">Flow</button>
             <button data-sh class="rounded-lg px-3 py-1.5 text-sm text-zinc-400 hover:bg-zinc-800">View sh</button>
             <button data-apply class="flex items-center gap-2 rounded-lg bg-amber-500 px-4 py-1.5 text-sm font-medium text-black hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-40">${icon("rocket")} Apply</button>
           </div>
           <p data-err class="min-h-5 px-5 pt-1 text-xs text-red-400"></p>
           <div data-yaml class="min-h-0 flex-1 overflow-hidden"></div>
+          <div data-flowbox class="hidden min-h-0 flex-1 overflow-auto"></div>
           <div class="flex h-60 shrink-0 flex-col border-t border-zinc-800">
             <p class="px-5 pt-2 text-[11px] font-medium uppercase tracking-wider text-zinc-500">Deploy log</p>
             <div data-dlog class="min-h-0 flex-1 overflow-auto px-5 py-1 font-mono text-xs leading-6"></div>
@@ -1155,6 +1158,16 @@ function deployPage(ctx: DeployCtx, root: HTMLElement) {
   let shYaml: string | null = null; // YAML kept aside while showing the generated sh
   let opened = false;
   const ed = createEditor(q("[data-yaml]"), () => shYaml === null && validate());
+  const flow = createFlow(q("[data-flowbox]"), (text, step) => ctx.log(step ? "step" : "info", `[sim] ${text}`));
+  const flowOn = () => !q("[data-flowbox]").classList.contains("hidden");
+  const showFlow = (on: boolean) => {
+    q("[data-flowbox]").classList.toggle("hidden", !on);
+    q("[data-yaml]").classList.toggle("hidden", on);
+    q("[data-flow]").textContent = on ? "Back to YAML" : "Flow";
+    if (!on) return;
+    const m = parseManifest(ed.get());
+    flow.render(compile(m, { tag: "<tag>", discard: m.targets.map((t) => t.name), sudoPassword: "********" }), `${m.gitUrl} @ ${m.version}`);
+  };
 
   const validate = () => {
     try {
@@ -1168,6 +1181,7 @@ function deployPage(ctx: DeployCtx, root: HTMLElement) {
   };
   const showYaml = (text = shYaml ?? ed.get()) => {
     shYaml = null;
+    showFlow(false);
     ed.set(text, "manifest");
     q("[data-sh]").textContent = "View sh";
   };
@@ -1227,9 +1241,15 @@ function deployPage(ctx: DeployCtx, root: HTMLElement) {
   q("[data-refresh]").onclick = refresh;
   // Preview what will actually run on the machine.
   q("[data-manual]").onclick = openManual;
+  q("[data-flow]").onclick = () => {
+    if (flowOn()) return showFlow(false);
+    if (shYaml !== null) showYaml();
+    if (validate()) showFlow(true);
+  };
   q("[data-sh]").onclick = () => {
     if (shYaml !== null) return showYaml();
     if (!validate()) return;
+    showFlow(false);
     shYaml = ed.get();
     ed.set(compile(parseManifest(shYaml), { tag: "<chosen at deploy>", discard: [], sudoPassword: "********" }), "sh", true);
     q("[data-sh]").textContent = "Back to YAML";
@@ -1237,10 +1257,11 @@ function deployPage(ctx: DeployCtx, root: HTMLElement) {
   q("[data-apply]").onclick = async () => {
     if (shYaml !== null) showYaml();
     if (!validate()) return;
+    showFlow(true); // watch the steps light up while it runs
     const btn = q<HTMLButtonElement>("[data-apply]");
     btn.disabled = true;
     try {
-      await startDeploy(ctx, ed.get());
+      await startDeploy(ctx, ed.get(), flow);
     } finally {
       btn.disabled = false;
     }
@@ -1320,7 +1341,7 @@ function wireRunDialog() {
 }
 
 /** Our "kubectl apply": save manifest -> precheck -> ask -> compile to bash -> run (streamed). */
-async function startDeploy(ctx: DeployCtx, text: string) {
+async function startDeploy(ctx: DeployCtx, text: string, flow?: { step(): void; end(ok: boolean): void }) {
   const m = parseManifest(text);
   const tag = `[${m.name}]`;
   try {
@@ -1353,8 +1374,10 @@ async function startDeploy(ctx: DeployCtx, text: string) {
     ctx.log("info", `${tag} deploying ${choice.tag}…`);
     const decoder = new TextDecoder();
     let partial = "";
-    const emit = (line: string) =>
+    const emit = (line: string) => {
+      if (line.startsWith("==> ")) flow?.step();
       ctx.log(line.startsWith("==> ") ? "step" : line.startsWith("!! ") ? "err" : "info", line);
+    };
     const un = await listen<number[]>(`exec-data-${ctx.sid}`, (e) => {
       const lines = (partial + decoder.decode(new Uint8Array(e.payload), { stream: true })).split(/\r?\n/);
       partial = lines.pop()!;
@@ -1363,6 +1386,7 @@ async function startDeploy(ctx: DeployCtx, text: string) {
     try {
       const r = await remote(ctx, SHELL, script, true);
       if (partial.trim()) emit(partial);
+      flow?.end(!r.code);
       ctx.log(r.code ? "err" : "ok", r.code ? `${tag} deploy failed (exit ${r.code})` : `${tag} deployed ${choice.tag}`);
     } finally {
       un();
