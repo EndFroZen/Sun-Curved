@@ -1,0 +1,90 @@
+@import "tailwindcss";
+@import "@xterm/xterm/css/xterm.css";
+
+:root {
+  color-scheme: dark;
+  /* code editor palette (night) */
+  --code-fg: #e4e4e7;
+  --code-key: #7dd3fc;
+  --code-str: #fcd34d;
+  --code-num: #c4b5fd;
+  --code-kw: #f472b6;
+  --code-var: #6ee7b7;
+  --code-punct: #71717a;
+  --code-comment: #71717a;
+  --code-gutter: #52525b;
+  --code-cursor: #f59e0b;
+  --code-active: rgb(255 255 255 / 0.04);
+  --code-sel: rgb(245 158 11 / 0.22);
+  --code-tip-bg: #18181b;
+  --code-tip-border: #3f3f46;
+}
+
+:root.light {
+  /* code editor palette (day) */
+  --code-fg: #18181b;
+  --code-key: #0369a1;
+  --code-str: #b45309;
+  --code-num: #7c3aed;
+  --code-kw: #be185d;
+  --code-var: #047857;
+  --code-punct: #a1a1aa;
+  --code-comment: #a1a1aa;
+  --code-gutter: #a1a1aa;
+  --code-cursor: #d97706;
+  --code-active: rgb(0 0 0 / 0.035);
+  --code-sel: rgb(245 158 11 / 0.2);
+  --code-tip-bg: #ffffff;
+  --code-tip-border: #e4e4e7;
+}
+
+/* Day mode: the UI is written with dark zinc classes; flipping the zinc scale makes it light.
+   Accent shades are deepened so they stay readable on white. */
+:root.light {
+  color-scheme: light;
+  --color-zinc-950: #ffffff;
+  --color-zinc-900: #f4f4f5;
+  --color-zinc-800: #e4e4e7;
+  --color-zinc-700: #d4d4d8;
+  --color-zinc-600: #a1a1aa;
+  --color-zinc-500: #71717a;
+  --color-zinc-400: #52525b;
+  --color-zinc-300: #3f3f46;
+  --color-zinc-200: #27272a;
+  --color-zinc-100: #18181b;
+  --color-amber-400: #d97706;
+  --color-emerald-400: #059669;
+  --color-red-400: #dc2626;
+  --color-red-300: #b91c1c;
+}
+
+/* Text on a server wallpaper: white with a soft shadow so it reads on any image. */
+.has-wall,
+.has-wall .text-zinc-500 {
+  color: #fff;
+  text-shadow: 0 1px 3px rgb(0 0 0 / 0.7);
+}
+
+/* Offline manual (rendered markdown) */
+.manual { font-size: 14px; line-height: 1.7; color: var(--color-zinc-200); }
+.manual h1 { font-size: 1.6rem; font-weight: 700; margin: 0 0 1rem; color: var(--color-zinc-100); }
+.manual h2 { font-size: 1.25rem; font-weight: 600; margin: 2.2rem 0 .8rem; padding-bottom: .3rem; border-bottom: 1px solid var(--color-zinc-800); color: var(--color-zinc-100); }
+.manual h3 { font-size: 1.05rem; font-weight: 600; margin: 1.5rem 0 .5rem; color: var(--color-amber-400); }
+.manual p, .manual ul, .manual ol, .manual table, .manual pre { margin: .6rem 0; }
+.manual ul { list-style: disc; padding-left: 1.4rem; }
+.manual ol { list-style: decimal; padding-left: 1.4rem; }
+.manual code { font-family: 'Cascadia Mono', Consolas, monospace; font-size: .85em; padding: .1em .35em; border-radius: 4px; background: var(--color-zinc-800); color: var(--code-str); }
+.manual pre { padding: .8rem 1rem; border-radius: 10px; border: 1px solid var(--color-zinc-800); background: var(--color-zinc-950); overflow-x: auto; }
+.manual pre code { padding: 0; background: none; color: var(--code-fg); font-size: 12.5px; }
+.manual table { border-collapse: collapse; width: 100%; font-size: 13px; }
+.manual th, .manual td { border: 1px solid var(--color-zinc-800); padding: .4rem .6rem; text-align: left; vertical-align: top; }
+.manual th { background: var(--color-zinc-800); font-weight: 600; }
+.manual strong { color: var(--color-zinc-100); }
+
+/* Desktop icons: fill top-to-bottom, then the next column. Size via icons-sm / icons-lg on the desk. */
+.tiles { display: flex; flex-direction: column; flex-wrap: wrap; align-content: flex-start; gap: .5rem; min-height: 0; }
+.tiles > button { width: 8rem; }
+.icons-sm .tiles > button { width: 6rem; }
+.icons-sm .tiles svg { width: 3rem; height: 3rem; }
+.icons-lg .tiles > button { width: 10rem; }
+.icons-lg .tiles svg { width: 7rem; height: 7rem; }
